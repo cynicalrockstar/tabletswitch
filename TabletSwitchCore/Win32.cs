@@ -10,6 +10,8 @@ namespace TabletSwitchCore
         public static readonly int SM_CONVERTIBLESLATEMODE = 0x2003;
         public static readonly int SM_TABLETPC = 0x56;
 
+        public static readonly int WM_SETTINGCHANGE = 0x1A;
+
         public enum DMDO
         {
             DEFAULT = 0,

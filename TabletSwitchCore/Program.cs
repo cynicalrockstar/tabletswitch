@@ -1,54 +1,84 @@
 ﻿using System;
-using System.Diagnostics;
 using System.Management;
 using System.Runtime.InteropServices;
-using System.Timers;
 using System.Threading;
-using System.Threading.Tasks;
+using System.Timers;
 using Microsoft.Win32;
 
 namespace TabletSwitchCore
 {
-    enum Scaling
-    {
-        Screen300 = 3,
-        Screen250 = 2,
-        Screen225 = 1,
-        ScreenDefault = 0,
-        Screen175 = -1,
-        Screen150 = -2,
-        Screen125 = -3,
-        Screen100 = -4
-    }
-
     class Program
     {
         static System.Timers.Timer timer = new System.Timers.Timer();
+        static LastChange lastChange = null;
 
         static void Main(string[] args)
         {
-            timer.Interval = 1000;
-            timer.AutoReset = true;
-            timer.Elapsed += Timer_Elapsed;
-            timer.Start();
+            //Check on startup, since we won't get a change event if starting late
+            CheckMetrics();
 
-            //The timer will run on its own thread. Sleep the main one to keep the app resident forever
+            //The System.Management bits do not work on ARM native, so if we are an ARM process, fall back to polling
+            //If running in emulation, this env variable will be "x86," and the watcher works fine in that environment.
+            var arch = System.Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE").ToLower();
+            if (arch == "arm64" || arch == "arm")
+            {
+                //Slowed down from 1000
+                timer.Interval = 3000;
+                timer.AutoReset = true;
+                timer.Elapsed += Timer_Elapsed;
+                timer.Start();
+            }
+            else
+            {
+                new Thread(new ThreadStart(() =>
+                {
+                    var query = new WqlEventQuery("Win32_SystemConfigurationChangeEvent");
+                    var watcher = new ManagementEventWatcher(query);
+                    watcher.EventArrived += Watcher_EventArrived;
+                    watcher.Start();
+                })).Start();
+            }
+
+            //The timer/watcher will run on its own thread. Sleep the main one to keep the app resident forever
             Thread.Sleep(Timeout.Infinite);
+        }
+
+        private static void Watcher_EventArrived(object sender, EventArrivedEventArgs e)
+        {
+            //We get a spray of notifications when this event fires. 
+            //If it hasn't been more than 5 seconds since we received, just ignore
+            if (lastChange?.TimeOfChange > DateTime.Now.AddSeconds(-5))
+                return;
+
+            CheckMetrics();
         }
 
         private static void Timer_Elapsed(object sender, ElapsedEventArgs e)
         {
+            CheckMetrics();
+        }
+
+        private static void CheckMetrics()
+        {
             var state = Win32.GetSystemMetrics(Win32.SM_CONVERTIBLESLATEMODE);
-            if (state == 0)
+            if (state == (int)DeviceState.Tablet)
             {
+                if (lastChange?.DeviceState == DeviceState.Tablet)
+                    return;
+
                 //Tablet mode
                 //This is 200% on surface devices
                 ChangeDPI((int)Scaling.ScreenDefault);
+                lastChange = new LastChange { DeviceState = DeviceState.Tablet, TimeOfChange = DateTime.Now };
             }
             else
             {
+                if (lastChange?.DeviceState == DeviceState.Desktop)
+                    return;
+
                 //Desktop mode
                 ChangeDPI((int)Scaling.Screen150);
+                lastChange = new LastChange { DeviceState = DeviceState.Desktop, TimeOfChange = DateTime.Now };
             }
         }
 
@@ -67,6 +97,7 @@ namespace TabletSwitchCore
                 return;
 
             key.SetValue("DpiValue", dpi);
+            key.Flush();
 
             //jog the resolution so Windows notices the dpi change
             //might be a better way, couldn't find one
