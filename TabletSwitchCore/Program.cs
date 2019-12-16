@@ -9,19 +9,31 @@ namespace TabletSwitchCore
 {
     class Program
     {
-        static System.Timers.Timer timer = new System.Timers.Timer();
+        static System.Timers.Timer timer = null;
         static LastChange lastChange = null;
+        static Thread workThread = null;
 
         static void Main(string[] args)
         {
+            SystemEvents.PowerModeChanged += SystemEvents_PowerModeChanged;
+
             //Check on startup, since we won't get a change event if starting late
             CheckMetrics();
 
+            StartWorkThread();
+
+            //The timer/watcher will run on its own thread. Sleep the main one to keep the app resident forever
+            Thread.Sleep(Timeout.Infinite);
+        }
+
+        private static void StartWorkThread()
+        {
             //The System.Management bits do not work on ARM native, so if we are an ARM process, fall back to polling
             //If running in emulation, this env variable will be "x86," and the watcher works fine in that environment.
             var arch = System.Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE").ToLower();
             if (arch == "arm64" || arch == "arm")
             {
+                timer = new System.Timers.Timer();
                 //Slowed down from 1000
                 timer.Interval = 3000;
                 timer.AutoReset = true;
@@ -30,17 +42,31 @@ namespace TabletSwitchCore
             }
             else
             {
-                new Thread(new ThreadStart(() =>
+                workThread = new Thread(new ThreadStart(() =>
                 {
                     var query = new WqlEventQuery("Win32_SystemConfigurationChangeEvent");
                     var watcher = new ManagementEventWatcher(query);
                     watcher.EventArrived += Watcher_EventArrived;
                     watcher.Start();
-                })).Start();
+                }));
+                workThread.Start();
             }
+        }
 
-            //The timer/watcher will run on its own thread. Sleep the main one to keep the app resident forever
-            Thread.Sleep(Timeout.Infinite);
+        private static void SystemEvents_PowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            switch (e.Mode)
+            {
+                case PowerModes.Resume:
+                    StartWorkThread();
+                    break;
+                case PowerModes.Suspend:
+                    if (workThread != null)
+                        workThread.Abort();
+                    if (timer != null)
+                        timer.Stop();
+                    break;
+            }
         }
 
         private static void Watcher_EventArrived(object sender, EventArrivedEventArgs e)
@@ -61,21 +87,15 @@ namespace TabletSwitchCore
         private static void CheckMetrics()
         {
             var state = Win32.GetSystemMetrics(Win32.SM_CONVERTIBLESLATEMODE);
-            if (state == (int)DeviceState.Tablet)
+            if (state == (int)DeviceState.Tablet && lastChange?.DeviceState != DeviceState.Tablet)
             {
-                if (lastChange?.DeviceState == DeviceState.Tablet)
-                    return;
-
                 //Tablet mode
                 //This is 200% on surface devices
                 ChangeDPI((int)Scaling.ScreenDefault);
                 lastChange = new LastChange { DeviceState = DeviceState.Tablet, TimeOfChange = DateTime.Now };
             }
-            else
+            else if (state == (int)DeviceState.Desktop && lastChange?.DeviceState != DeviceState.Desktop)
             {
-                if (lastChange?.DeviceState == DeviceState.Desktop)
-                    return;
-
                 //Desktop mode
                 ChangeDPI((int)Scaling.Screen150);
                 lastChange = new LastChange { DeviceState = DeviceState.Desktop, TimeOfChange = DateTime.Now };
@@ -94,7 +114,10 @@ namespace TabletSwitchCore
 
             var current = Convert.ToInt32(key.GetValue("DpiValue"));
             if (current == dpi)
+            {
+                key.Close();
                 return;
+            }
 
             key.SetValue("DpiValue", dpi);
             key.Flush();
