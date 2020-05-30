@@ -9,7 +9,7 @@ namespace TabletSwitchCore
         Screen300 = 3,
         Screen250 = 2,
         Screen225 = 1,
-        ScreenDefault = 0,
+        Screen200 = 0,
         Screen175 = -1,
         Screen150 = -2,
         Screen125 = -3,

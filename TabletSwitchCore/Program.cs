@@ -1,8 +1,11 @@
 ﻿using System;
+using System.IO;
 using System.Management;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Timers;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Win32;
 
 namespace TabletSwitchCore
@@ -12,18 +15,41 @@ namespace TabletSwitchCore
         static System.Timers.Timer timer = null;
         static LastChange lastChange = null;
         static Thread workThread = null;
+        public static IConfigurationRoot configuration;
 
         static void Main(string[] args)
         {
+            ServiceCollection serviceCollection = new ServiceCollection();
+            ConfigureServices(serviceCollection);
+
             SystemEvents.PowerModeChanged += SystemEvents_PowerModeChanged;
 
-            //Check on startup, since we won't get a change event if starting late
-            CheckMetrics();
+            try
+            {
+                //Check on startup, since we won't get a change event if starting late
+                CheckMetrics();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.ToString());
+            }
 
             StartWorkThread();
 
             //The timer/watcher will run on its own thread. Sleep the main one to keep the app resident forever
             Thread.Sleep(Timeout.Infinite);
+        }
+
+        private static void ConfigureServices(IServiceCollection serviceCollection)
+        {
+            // Build configuration
+            configuration = new ConfigurationBuilder()
+                .SetBasePath(Directory.GetParent(AppContext.BaseDirectory).FullName)
+                .AddJsonFile("appsettings.json", false)
+                .Build();
+
+            // Add access to generic IConfigurationRoot
+            serviceCollection.AddSingleton<IConfigurationRoot>(configuration);
         }
 
         private static void StartWorkThread()
@@ -86,18 +112,38 @@ namespace TabletSwitchCore
 
         private static void CheckMetrics()
         {
-            var state = Win32.GetSystemMetrics(Win32.SM_CONVERTIBLESLATEMODE);
-            if (state == (int)DeviceState.Tablet && lastChange?.DeviceState != DeviceState.Tablet)
+            //Two ways to do this: GetSystemMetrics detects the undocking of the machine, 
+            //the registry method reads the "Tablet Mode" switch; SM_TABLET PC does not seem to work on Windows 10
+            //and SM_CONVERTIBLESLATEMODE doesn't seem totally reliable
+
+            var tabletMode = false;
+
+            var detectType = configuration.GetSection("SwitchDetect").Value;
+            if (detectType == "TabletMode")
+            {
+                var regTabletMode = (int)Registry.GetValue(@"HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\ImmersiveShell", "TabletMode", 0);
+                if (regTabletMode == 1)
+                    tabletMode = true;
+            }
+            else if (detectType == "SystemMetric")
+            {
+                var state = Win32.GetSystemMetrics(Win32.SM_CONVERTIBLESLATEMODE);
+                if (state == (int)DeviceState.Tablet && lastChange?.DeviceState != DeviceState.Tablet)
+                    tabletMode = true;
+            }
+            
+            if (tabletMode)
             {
                 //Tablet mode
-                //This is 200% on surface devices
-                ChangeDPI((int)Scaling.ScreenDefault);
+                var tabletDpi = (Scaling)Enum.Parse(typeof(Scaling), configuration.GetSection("TabletDpi").Value);
+                ChangeDPI((int)tabletDpi);
                 lastChange = new LastChange { DeviceState = DeviceState.Tablet, TimeOfChange = DateTime.Now };
             }
-            else if (state == (int)DeviceState.Desktop && lastChange?.DeviceState != DeviceState.Desktop)
+            else
             {
                 //Desktop mode
-                ChangeDPI((int)Scaling.Screen150);
+                var desktopDpi = (Scaling)Enum.Parse(typeof(Scaling), configuration.GetSection("DesktopDpi").Value);
+                ChangeDPI((int)desktopDpi);
                 lastChange = new LastChange { DeviceState = DeviceState.Desktop, TimeOfChange = DateTime.Now };
             }
         }
@@ -109,8 +155,9 @@ namespace TabletSwitchCore
             key = key.OpenSubKey("Desktop", true);
             key = key.OpenSubKey("PerMonitorSettings", true);
 
-            //TODO: Get your own monitor ID from the registry and put it here
-            key = key.OpenSubKey("LGD0555600224_00_07E2_41^6DF395BF1D440664DC6515C277A800D6", true);
+            var monitorId = configuration.GetSection("MonitorID").Value;
+
+            key = key.OpenSubKey(monitorId, true);
 
             var current = Convert.ToInt32(key.GetValue("DpiValue"));
             if (current == dpi)
