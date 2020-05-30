@@ -169,10 +169,19 @@ namespace TabletSwitchCore
             key.SetValue("DpiValue", dpi);
             key.Flush();
 
-            //jog the resolution so Windows notices the dpi change
-            //might be a better way, couldn't find one
-            SetResolution(1920, 1280);
-            SetResolution(2880, 1920);
+            GetResolution(out int w, out int h);
+
+            SetResolution(w, h + 1);
+            SetResolution(w, h);
+        }
+
+        private static void GetResolution(out int w, out int h)
+        {
+            Win32.DEVMODE dm = new Win32.DEVMODE();
+            dm.dmSize = (short)Marshal.SizeOf(typeof(Win32.DEVMODE));
+            Win32.EnumDisplaySettings(null, 0, ref dm);
+            w = dm.dmPelsWidth;
+            h = dm.dmPelsHeight;
         }
 
         private static void SetResolution(int w, int h)

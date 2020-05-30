@@ -67,6 +67,9 @@ namespace TabletSwitchCore
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         public static extern int ChangeDisplaySettings([In] ref DEVMODE lpDevMode, int dwFlags);
 
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        public static extern int EnumDisplaySettings(byte[] lpszDeviceName, [param: MarshalAs(UnmanagedType.U4)] int iModeNum, [In, Out] ref DEVMODE lpDevMode);
+
         [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto, EntryPoint = "GetSystemMetrics")]
         public static extern int GetSystemMetrics(int nIndex);
     }
