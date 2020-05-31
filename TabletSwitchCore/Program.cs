@@ -1,9 +1,7 @@
 ﻿using System;
 using System.IO;
-using System.Management;
 using System.Runtime.InteropServices;
 using System.Threading;
-using System.Timers;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Win32;
@@ -12,7 +10,6 @@ namespace TabletSwitchCore
 {
     class Program
     {
-        static System.Timers.Timer timer = null;
         static LastChange lastChange = null;
         static Thread workThread = null;
         public static IConfigurationRoot configuration;
@@ -36,7 +33,7 @@ namespace TabletSwitchCore
 
             StartWorkThread();
 
-            //The timer/watcher will run on its own thread. Sleep the main one to keep the app resident forever
+            //The watcher will run on its own thread. Sleep the main one to keep the app resident forever
             Thread.Sleep(Timeout.Infinite);
         }
 
@@ -54,29 +51,18 @@ namespace TabletSwitchCore
 
         private static void StartWorkThread()
         {
-            //The System.Management bits do not work on ARM native, so if we are an ARM process, fall back to polling
-            //If running in emulation, this env variable will be "x86," and the watcher works fine in that environment.
-            var arch = System.Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE").ToLower();
-            if (arch == "arm64" || arch == "arm")
+            //Switched from the timer method to this win32 registry monitor API. Seems to work on all architectures
+            workThread = new Thread(new ThreadStart(() =>
             {
-                timer = new System.Timers.Timer();
-                //Slowed down from 1000
-                timer.Interval = 3000;
-                timer.AutoReset = true;
-                timer.Elapsed += Timer_Elapsed;
-                timer.Start();
-            }
-            else
-            {
-                workThread = new Thread(new ThreadStart(() =>
+                while (true)
                 {
-                    var query = new WqlEventQuery("Win32_SystemConfigurationChangeEvent");
-                    var watcher = new ManagementEventWatcher(query);
-                    watcher.EventArrived += Watcher_EventArrived;
-                    watcher.Start();
-                }));
-                workThread.Start();
-            }
+                    var monitorKey = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\ImmersiveShell");
+                    var hkey = monitorKey.Handle.DangerousGetHandle();
+                    int result = Win32.RegNotifyChangeKeyValue(hkey, true, Win32.REG_NOTIFY_CHANGE.LAST_SET, IntPtr.Zero, false);
+                    CheckMetrics();
+                }
+            }));
+            workThread.Start();
         }
 
         private static void SystemEvents_PowerModeChanged(object sender, PowerModeChangedEventArgs e)
@@ -89,25 +75,8 @@ namespace TabletSwitchCore
                 case PowerModes.Suspend:
                     if (workThread != null)
                         workThread.Abort();
-                    if (timer != null)
-                        timer.Stop();
                     break;
             }
-        }
-
-        private static void Watcher_EventArrived(object sender, EventArrivedEventArgs e)
-        {
-            //We get a spray of notifications when this event fires. 
-            //If it hasn't been more than 5 seconds since we received, just ignore
-            if (lastChange?.TimeOfChange > DateTime.Now.AddSeconds(-5))
-                return;
-
-            CheckMetrics();
-        }
-
-        private static void Timer_Elapsed(object sender, ElapsedEventArgs e)
-        {
-            CheckMetrics();
         }
 
         private static void CheckMetrics()
@@ -179,7 +148,7 @@ namespace TabletSwitchCore
         {
             Win32.DEVMODE dm = new Win32.DEVMODE();
             dm.dmSize = (short)Marshal.SizeOf(typeof(Win32.DEVMODE));
-            Win32.EnumDisplaySettings(null, 0, ref dm);
+            Win32.EnumDisplaySettings(null, -1, ref dm);
             w = dm.dmPelsWidth;
             h = dm.dmPelsHeight;
         }
@@ -187,7 +156,6 @@ namespace TabletSwitchCore
         private static void SetResolution(int w, int h)
         {
             Win32.DEVMODE dm = new Win32.DEVMODE();
-
             dm.dmSize = (short)Marshal.SizeOf(typeof(Win32.DEVMODE));
 
             dm.dmPelsWidth = w;

@@ -6,14 +6,14 @@ namespace TabletSwitchCore
 {
     enum Scaling
     {
-        Screen300 = 3,
-        Screen250 = 2,
-        Screen225 = 1,
-        Screen200 = 0,
-        Screen175 = -1,
-        Screen150 = -2,
-        Screen125 = -3,
-        Screen100 = -4
+        Larger3 = 3,
+        Larger2 = 2,
+        Larger1 = 1,
+        ScreenDefault = 0,
+        Smaller1 = -1,
+        Smaller2 = -2,
+        Smaller3 = -3,
+        Smaller4 = -4
     }
 
     enum DeviceState
