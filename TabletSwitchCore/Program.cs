@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -10,6 +12,9 @@ namespace TabletSwitchCore
 {
     class Program
     {
+        [DllImport("DpiHelper.dll", CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool SetDisplayDpi(int dpi);
+
         static LastChange lastChange = null;
         static Thread workThread = null;
         public static IConfigurationRoot configuration;
@@ -56,10 +61,12 @@ namespace TabletSwitchCore
             {
                 while (true)
                 {
-                    var monitorKey = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\ImmersiveShell");
-                    var hkey = monitorKey.Handle.DangerousGetHandle();
-                    int result = Win32.RegNotifyChangeKeyValue(hkey, true, Win32.REG_NOTIFY_CHANGE.LAST_SET, IntPtr.Zero, false);
+                    //This doesn't work on Windows 11 any more. Leaving it here for posterity
+                    //var monitorKey = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\ImmersiveShell");
+                    //var hkey = monitorKey.Handle.DangerousGetHandle();
+                    //int result = Win32.RegNotifyChangeKeyValue(hkey, true, Win32.REG_NOTIFY_CHANGE.LAST_SET, IntPtr.Zero, false);
                     CheckMetrics();
+                    Thread.Sleep(3000);
                 }
             }));
             workThread.Start();
@@ -74,7 +81,12 @@ namespace TabletSwitchCore
                     break;
                 case PowerModes.Suspend:
                     if (workThread != null)
-                        workThread.Abort();
+                    {
+                        // Replace Thread.Abort() with a safer approach using a cancellation mechanism
+                        workThread.Interrupt();
+                        workThread.Join(); // Wait for the thread to finish
+                        workThread = null;
+                    }
                     break;
             }
         }
@@ -88,7 +100,7 @@ namespace TabletSwitchCore
             var tabletMode = false;
 
             var detectType = configuration.GetSection("SwitchDetect").Value;
-            if (detectType == "TabletMode")
+            if (detectType == "TabletMode") //This may not work any more
             {
                 var regTabletMode = (int)Registry.GetValue(@"HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\ImmersiveShell", "TabletMode", 0);
                 if (regTabletMode == 1)
@@ -97,73 +109,24 @@ namespace TabletSwitchCore
             else if (detectType == "SystemMetric")
             {
                 var state = Win32.GetSystemMetrics(Win32.SM_CONVERTIBLESLATEMODE);
-                if (state == (int)DeviceState.Tablet && lastChange?.DeviceState != DeviceState.Tablet)
+                if (state == (int)DeviceState.Tablet)
                     tabletMode = true;
             }
-            
-            if (tabletMode)
+
+            if (tabletMode && (lastChange == null || lastChange.DeviceState != DeviceState.Tablet))
             {
                 //Tablet mode
                 var tabletDpi = (Scaling)Enum.Parse(typeof(Scaling), configuration.GetSection("TabletDpi").Value);
-                ChangeDPI((int)tabletDpi);
+                var result = SetDisplayDpi((int)tabletDpi); //C++ DLL callout
                 lastChange = new LastChange { DeviceState = DeviceState.Tablet, TimeOfChange = DateTime.Now };
             }
-            else
+            else if (tabletMode == false && (lastChange == null || lastChange.DeviceState != DeviceState.Desktop))
             {
                 //Desktop mode
                 var desktopDpi = (Scaling)Enum.Parse(typeof(Scaling), configuration.GetSection("DesktopDpi").Value);
-                ChangeDPI((int)desktopDpi);
+                var result = SetDisplayDpi((int)desktopDpi); //C++ DLL callout
                 lastChange = new LastChange { DeviceState = DeviceState.Desktop, TimeOfChange = DateTime.Now };
             }
-        }
-
-        private static void ChangeDPI(int dpi)
-        {
-            RegistryKey key = Registry.CurrentUser.OpenSubKey("Control Panel", true);
-
-            key = key.OpenSubKey("Desktop", true);
-            key = key.OpenSubKey("PerMonitorSettings", true);
-
-            var monitorId = configuration.GetSection("MonitorID").Value;
-
-            key = key.OpenSubKey(monitorId, true);
-
-            var current = Convert.ToInt32(key.GetValue("DpiValue"));
-            if (current == dpi)
-            {
-                key.Close();
-                return;
-            }
-
-            key.SetValue("DpiValue", dpi);
-            key.Flush();
-
-            GetResolution(out int w, out int h);
-
-            SetResolution(w, h + 1);
-            SetResolution(w, h);
-        }
-
-        private static void GetResolution(out int w, out int h)
-        {
-            Win32.DEVMODE dm = new Win32.DEVMODE();
-            dm.dmSize = (short)Marshal.SizeOf(typeof(Win32.DEVMODE));
-            Win32.EnumDisplaySettings(null, -1, ref dm);
-            w = dm.dmPelsWidth;
-            h = dm.dmPelsHeight;
-        }
-
-        private static void SetResolution(int w, int h)
-        {
-            Win32.DEVMODE dm = new Win32.DEVMODE();
-            dm.dmSize = (short)Marshal.SizeOf(typeof(Win32.DEVMODE));
-
-            dm.dmPelsWidth = w;
-            dm.dmPelsHeight = h;
-
-            dm.dmFields = Win32.DEVMODE.DM_PELSWIDTH | Win32.DEVMODE.DM_PELSHEIGHT;
-
-            Win32.ChangeDisplaySettings(ref dm, 0);
         }
     }
 }

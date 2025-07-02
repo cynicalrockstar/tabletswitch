@@ -5,3 +5,5 @@
 /.vs
 /TabletSwitchCore/bin
 /TabletSwitchCore/obj
+/DpiHelper/ARM64/Debug
+/ARM64/Debug
